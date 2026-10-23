@@ -140,11 +140,14 @@ export class SegmentationRegistry {
 
   private findMergeTarget(label: string, sorted: Uint32Array): SegmentedObject | null {
     const normalized = label.trim().toLowerCase();
+    let best: SegmentedObject | null = null;
+    let bestOverlap = MERGE_OVERLAP_RATIO;
     for (const object of this.objects.values()) {
-      if (object.label.trim().toLowerCase() === normalized) return object;
-      if (overlapRatio(object.splatIndices, sorted) > MERGE_OVERLAP_RATIO) return object;
+      if (object.label.trim().toLowerCase() !== normalized) continue;
+      const overlap = overlapRatio(object.candidateIndices, sorted);
+      if (overlap > bestOverlap) { best = object; bestOverlap = overlap; }
     }
-    return null;
+    return best;
   }
 
   // First 8 objects pull hand-tuned palette colors; past that we walk the hue circle by

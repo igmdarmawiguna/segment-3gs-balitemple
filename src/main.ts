@@ -9,18 +9,17 @@ const SPLAT_URL = "/world.ply";
 // Lightweight collision mesh, used ONLY to derive the floor height at startup.
 const MESH_URL = "/mesh_simplified.ply";
 const CELL_SIZE = 5;
-const MIN_DISTANCE = 1.5;
+const MIN_DISTANCE = 0.05;
 const MAX_DISTANCE = 150;
 const PITCH_MIN = -1.35;
 const PITCH_MAX = 1.35;
 // Standoff floor when framing an object: keeps the camera from burying itself inside a
 // small foreground/corner object's splats (which just washes the view out).
-const FOCUS_MIN_DISTANCE = 2.5;
+const FOCUS_MIN_DISTANCE = 0.05;
 const EYE_HEIGHT = 1.6;
 const FLOOR_RADIUS = 2.5;
 // Zoomed-in starting radius: stand close to the grounded room center looking into the
 // small room, not the wide room-span view.
-const INITIAL_DISTANCE = 2.0;
 // Slight downward tilt: camera sits above the pivot and looks down at an angle.
 const INITIAL_PITCH = 0.35;
 
@@ -75,8 +74,8 @@ async function boot(): Promise<void> {
     const floorY = computeFloorY(meshPositions, bounds.center.x, bounds.center.z, FLOOR_RADIUS);
     bounds.center.y = floorY + EYE_HEIGHT;
   } catch (error) {
-    console.warn("Floor mesh unavailable, grounding on splat bounds instead", error);
-    bounds.center.y = bounds.floorY + EYE_HEIGHT;
+    console.warn("Floor mesh unavailable, framing the model bounds instead", error);
+    // Keep the orbit target at the model center for standalone assets.
   }
 
   const state: RuntimeState = {
@@ -87,7 +86,7 @@ async function boot(): Promise<void> {
     pitch: INITIAL_PITCH,
     // Stand close to the scene center, slightly raised, looking down at an angle.
     // User can scroll out / re-aim.
-    distance: clamp(INITIAL_DISTANCE, MIN_DISTANCE, MAX_DISTANCE),
+    distance: clamp(bounds.span * 1.8, MIN_DISTANCE, MAX_DISTANCE),
     isPointerDown: false,
     batchRunning: false,
     lookAround: null,
@@ -109,6 +108,10 @@ async function loadSplat(app: pc.Application, url: string): Promise<pc.Entity> {
   await new Promise<void>((resolve, reject) => {
     asset.once("load", () => resolve());
     asset.once("error", (error: unknown) => reject(error));
+    asset.on("progress", (received: number, total: number) => {
+      const status = document.querySelector("#seg-status");
+      if (status) status.textContent = `Loading model: ${Math.round(received / 1048576)} / ${Math.round(total / 1048576)} MB`;
+    });
     app.assets.load(asset);
   });
 
@@ -447,6 +450,8 @@ function clamp(value: number, min: number, max: number): number {
 
 void boot().catch((error) => {
   console.error(error);
+  const status = document.querySelector("#seg-status");
+  if (status) status.textContent = `Failed to load model: ${String(error)}`;
   const hud = document.querySelector("#hud");
   if (hud) hud.innerHTML = `<strong>Failed to load</strong><span>${String(error)}</span>`;
 });

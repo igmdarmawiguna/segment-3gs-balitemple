@@ -1,7 +1,7 @@
 import type * as pc from "playcanvas";
 import type { SegmentationApi } from "./api";
 import { captureFrame } from "./capture";
-import { liftMask } from "./lift";
+import { liftMask, type LiftOptions } from "./lift";
 import { decodeMask } from "./mask";
 import type { MaskOverlay, OverlayLayer } from "./overlay";
 import type { SegmentationRegistry } from "./registry";
@@ -39,13 +39,9 @@ export interface SweepPose {
   distance: number;
 }
 
-// 8 yaw angles × 2 pitch angles = 16 outward gaze directions from the fixed center eye.
+// Orbit the object from eight azimuths at two elevations, looking at the pivot.
 export const YAW_STEPS = 8;
-// Gaze pitch (look-around forward.y = sin(pitch)), so NEGATIVE tilts the gaze DOWN.
-// We pick a slightly-down look (~ -14°) and a near-level look (~ -3°) so the sweep
-// frames the surrounding walls, furniture, and floor that sit at/below eye level.
-// Both are ≤ 0 — we never stare at the ceiling.
-const PITCH_VALUES = [-0.25, -0.05];
+const PITCH_VALUES = [0.15, 0.5];
 export const TOTAL_VIEWS = YAW_STEPS * PITCH_VALUES.length;
 
 // SAM3 runs ONE model forward per text phrase (~13s warm on MPS, ~20s cold), and a single
@@ -97,6 +93,8 @@ export interface BatchContext {
   signal: AbortSignal;
   isCancelled: () => boolean;
   onProgress: (progress: BatchProgress) => void;
+  liftOptions?: LiftOptions;
+  onBeforeCapture?: () => void;
   onViewSegmented: () => void;
 }
 
@@ -126,12 +124,11 @@ export async function runBatchSweep(ctx: BatchContext): Promise<BatchResult> {
       if (ctx.isCancelled()) return cancelled(v, poses.length, callsRun);
 
       const pose = poses[v]!;
-      // Pivot in place: anchor the camera AT the room center and only rotate its gaze
-      // outward by (yaw,pitch). The camera position is identical for all 16 poses.
+      ctx.onBeforeCapture?.();
+      // Move around the model rather than capturing from inside it.
       ctx.rig.apply({
         ...pose,
         pivot: ctx.pivot,
-        lookAround: { eye: ctx.pivot, yaw: pose.yaw, pitch: pose.pitch },
       });
       // Two render frames guarantee the update loop repositioned the camera AND the GPU
       // drew it before we read the framebuffer.
@@ -178,7 +175,7 @@ export async function runBatchSweep(ctx: BatchContext): Promise<BatchResult> {
         for (const maskResult of response.masks) {
           if (maskResult.score < SEGMENT_MIN_SCORE) continue;
           const mask = await decodeMask(maskResult, response.width, response.height);
-          const lifted = liftMask({ grid: ctx.grid }, frame.pose, mask, null);
+          const lifted = liftMask({ grid: ctx.grid }, frame.pose, mask, null, ctx.liftOptions);
           if (!lifted) continue;
           const { object } = ctx.registry.upsert(mask.label, lifted.indices, mask.score);
           layers.push({ mask, color: object.color });

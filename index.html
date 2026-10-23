@@ -44,6 +44,23 @@
       </section>
 
       <section class="control-section">
+        <span class="section-label">Segmentation refinement</span>
+        <label for="seg-depth">Surface thickness</label>
+        <select id="seg-depth">
+          <option value="0.002">Fine relief (0.2% of model size)</option>
+          <option value="0.005" selected>Balanced (0.5%)</option>
+          <option value="0.015">Thicker surface (1.5%)</option>
+        </select>
+        <label for="seg-edge">Mask edge cleanup</label>
+        <select id="seg-edge">
+          <option value="0" selected>Preserve thin details</option>
+          <option value="1">Trim 1 pixel</option>
+          <option value="2">Trim 2 pixels</option>
+        </select>
+        <p>Settings apply to new segments. Delete poor results before retrying.</p>
+      </section>
+
+      <section class="control-section">
         <span class="section-label">Batch Sweep</span>
         <textarea
           id="seg-concepts"

@@ -11,7 +11,7 @@ import { SegmentationUi } from "./ui";
 import { SelectionViz } from "./viz";
 import type { SegmentPrompts, SegmentedObject } from "./types";
 
-const BATCH_MIN_DISTANCE = 2;
+const BATCH_MIN_DISTANCE = 0.05;
 const BATCH_MAX_DISTANCE = 150;
 // v2: multi-select. Stores a JSON array of selected ids (v1 was a single id string).
 const SELECTED_STORAGE_KEY = "segmentation.selected.v2";
@@ -37,6 +37,7 @@ export class SegmentationSystem {
   private registry: SegmentationRegistry | null = null;
   private readonly selectedIds = new Set<string>();
   private busy = false;
+  private segmentAbort: AbortController | null = null;
   private batchRunning = false;
   private batchCancelled = false;
   private batchAbort: AbortController | null = null;
@@ -56,7 +57,7 @@ export class SegmentationSystem {
       onFocus: (id) => this.focus(id),
       onDelete: (id) => this.deleteObject(id),
       onBatchStart: () => void this.runBatch(),
-      onBatchCancel: () => this.cancelBatch(),
+      onBatchCancel: () => this.busy ? this.segmentAbort?.abort() : this.cancelBatch(),
     });
   }
 
@@ -136,18 +137,28 @@ export class SegmentationSystem {
     }
 
     this.busy = true;
+    const controller = new AbortController();
+    this.segmentAbort = controller;
+    this.deps.cameraRig.setBatchRunning(true);
+    const signal = controller.signal;
     this.ui.setBusy(true, "Segmenting…");
     try {
+      this.clearOverlay();
+      this.viz.sync([], new Set());
+      // Capture the original scene, without previously selected/recolored splats.
+      await abortableStep(this.deps.cameraRig.waitForRender(), signal, 5000, "Render timed out. Keep the viewer tab active and retry.");
+      await abortableStep(this.deps.cameraRig.waitForRender(), signal, 5000, "Render timed out. Keep the viewer tab active and retry.");
       const frame = captureFrame(this.deps.canvas, this.deps.camera);
       const prompts: SegmentPrompts = { text: [concept] };
 
-      const response = await this.api.segment(frame, prompts);
+      const response = await this.api.segment(frame, prompts, { signal, timeoutMs: 45000 });
       if (response.masks.length === 0) {
-        this.ui.setBusy(false, "No masks returned");
+        this.ui.setBusy(false, "No matching masks. Zoom into the ornament or try another prompt.");
         return;
       }
 
       const layers: OverlayLayer[] = [];
+      const resultIds = new Set<string>();
       let liftedCount = 0;
       let dropped = 0;
       for (const maskResult of response.masks) {
@@ -156,14 +167,20 @@ export class SegmentationSystem {
           dropped += 1;
           continue;
         }
-        const mask = await decodeMask(maskResult, response.width, response.height);
-        const lifted = liftMask({ grid: this.grid }, frame.pose, mask, null);
+        const mask = await abortableStep(decodeMask(maskResult, response.width, response.height), signal, 10000, "Mask decoding timed out. Please retry.");
+        const lifted = liftMask({ grid: this.grid }, frame.pose, mask, null, { ...this.ui.getLiftOptions(), sceneScale: this.deps.sceneBounds.span });
         if (!lifted) continue;
         const { object } = this.registry.upsert(mask.label, lifted.indices, mask.score);
         layers.push({ mask, color: object.color });
+        resultIds.add(object.id);
         liftedCount += 1;
       }
 
+      if (resultIds.size > 0) {
+        this.selectedIds.clear();
+        for (const id of resultIds) this.selectedIds.add(id);
+        this.persistSelection();
+      }
       this.overlay.draw(layers);
       // Anchor the overlay to the current camera pose so the auto-clear can detect motion.
       this.overlayAnchor = layers.length > 0 ? this.deps.camera.getPosition().clone() : null;
@@ -172,12 +189,16 @@ export class SegmentationSystem {
 
       const suffix = this.api.isUsingMock() ? " (mock)" : "";
       const droppedNote = dropped > 0 ? ` · ${dropped} below ${Math.round(SEGMENT_MIN_SCORE * 100)}%` : "";
-      this.ui.setBusy(false, `Lifted ${liftedCount}/${response.masks.length} mask(s) in ${response.elapsed_ms}ms${droppedNote}${suffix}`);
+      this.ui.setBusy(false, `Selected ${resultIds.size} object(s) from ${liftedCount}/${response.masks.length} mask(s). ${response.elapsed_ms}ms${droppedNote}${suffix}`);
     } catch (error) {
       console.error("Segmentation failed", error);
-      this.ui.setBusy(false, `Error: ${error instanceof Error ? error.message : String(error)}`);
+      this.ui.setStatus(signal.aborted ? "Segmentation cancelled. Ready to retry." : `Error: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       this.busy = false;
+      this.segmentAbort = null;
+      this.deps.cameraRig.setBatchRunning(false);
+      this.ui.setBusy(false);
+      this.refresh();
     }
   }
 
@@ -215,12 +236,14 @@ export class SegmentationSystem {
         camera: this.deps.camera,
         canvas: this.deps.canvas,
         rig,
-        pivot: this.deps.sceneBounds.center,
+        pivot: restoreView.pivot,
         concepts,
         framingDistance,
         signal: this.batchAbort.signal,
         isCancelled: () => this.batchCancelled,
         onProgress: (progress) => this.ui.setProgress(progress),
+        liftOptions: { ...this.ui.getLiftOptions(), sceneScale: this.deps.sceneBounds.span },
+        onBeforeCapture: () => this.viz.sync([], new Set()),
         onViewSegmented: () => this.refresh(),
       });
 
@@ -241,6 +264,7 @@ export class SegmentationSystem {
       rig.apply(restoreView);
       this.ui.setBatchRunning(false);
       this.overlay.clear();
+      this.refresh();
     }
   }
 
@@ -322,4 +346,20 @@ function isTextFieldFocused(): boolean {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+/** Bound render/decode waits as well as network waits; cancellation always unlocks UI. */
+function abortableStep<T>(work: Promise<T>, signal: AbortSignal, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => finish(() => reject(new DOMException("Cancelled", "AbortError")));
+    const timer = setTimeout(() => finish(() => reject(new Error(message))), timeoutMs);
+    const finish = (settle: () => void) => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      settle();
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    work.then(value => finish(() => resolve(value)), error => finish(() => reject(error)));
+  });
 }

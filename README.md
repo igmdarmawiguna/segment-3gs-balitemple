@@ -196,3 +196,26 @@ no-gated-weights `fallback` tier).
 - **[Meta AI — Segment Anything 3](https://huggingface.co/facebook/sam3)** — open-vocabulary
 concept segmentation (the gated `sam3` tier).
 
+
+
+## Ornament segmentation refinement
+
+Use `?segmentMode=real` so backend failures are reported instead of returning a synthetic mask.
+Start with `stone carving`, zoom to a visible ornament, and run **Segment View**.
+The mask overlay is the 2D result; selecting an object highlights the lifted 3D Gaussians.
+
+- **Surface thickness** controls the allowed depth behind the nearest Gaussian center in each capture pixel. Balanced is 0.5% of the robust model span; Fine relief is 0.2%; Thicker surface is 1.5%.
+- **Mask edge cleanup** optionally erodes the mask by 1?2 capture pixels. Leave it off for thin carvings.
+- The lift caches a projected center-depth buffer per captured view. It rejects hidden centers at the same pixel instead of taking a fixed 2.5-unit slab through the whole model. This approximates visibility using centers; it does not model Gaussian footprint or alpha compositing.
+- Captures temporarily remove selection recoloring and point highlights. Batch Segment orbits the current pivot from 16 external viewpoints and restores the original camera afterwards. Frame the whole target before starting a batch.
+- Separate instances sharing a prompt stay separate unless their Gaussian sets overlap by more than 25%. Disjoint views may remain separate objects; review the result before treating it as a complete 3D ornament.
+
+Settings affect new results only. Delete inaccurate old results before retrying; this change does not reinterpret saved masks or train a recognition model.
+
+Regression checks (PowerShell, Node/npm installed):
+
+```powershell
+.\node_modules\.bin\esbuild.cmd tests/segmentation.test.ts --bundle --platform=node --format=cjs --outfile=$env:TEMP/segmentation-test.cjs
+node $env:TEMP/segmentation-test.cjs
+npm.cmd run build
+```

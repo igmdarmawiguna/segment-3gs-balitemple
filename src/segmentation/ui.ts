@@ -1,3 +1,4 @@
+import type { LiftOptions } from "./lift";
 import { estimateBatch, TOTAL_VIEWS } from "./batch";
 import type { BatchProgress } from "./batch";
 import type { SegmentedObject } from "./types";
@@ -13,7 +14,7 @@ export interface UiCallbacks {
 
 const CONCEPTS_STORAGE_KEY = "segmentation.concepts.v1";
 // Cost scales with views × concepts, so keep the default list modest.
-const DEFAULT_CONCEPTS = "sofa, chair, table, cup, pillow, plant, lamp, vase";
+const DEFAULT_CONCEPTS = "stone carving, roof ornament, decorative relief";
 
 export class SegmentationUi {
   private readonly prompt: HTMLInputElement;
@@ -73,6 +74,13 @@ export class SegmentationUi {
     });
   }
 
+  getLiftOptions(): LiftOptions {
+    return {
+      depthRatio: Number(requireElement<HTMLSelectElement>("#seg-depth").value),
+      edgeMargin: Number(requireElement<HTMLSelectElement>("#seg-edge").value),
+    };
+  }
+
   getPromptText(): string {
     return this.prompt.value.trim();
   }
@@ -111,6 +119,9 @@ export class SegmentationUi {
   setBusy(busy: boolean, message?: string): void {
     this.runButton.disabled = busy;
     this.runButton.classList.toggle("is-busy", busy);
+    this.batchButton.disabled = busy;
+    this.cancelButton.hidden = !busy;
+    this.cancelButton.textContent = busy ? "Cancel segment" : "Cancel sweep";
     if (message) this.setStatus(message);
   }
 
@@ -120,6 +131,7 @@ export class SegmentationUi {
     this.runButton.disabled = running;
     this.concepts.disabled = running;
     this.cancelButton.hidden = !running;
+    this.cancelButton.textContent = "Cancel sweep";
     this.progress.hidden = !running;
     this.estimate.hidden = running;
     if (!running) {
@@ -158,7 +170,7 @@ export class SegmentationUi {
             <span class="seg-swatch" style="background:${swatch}"></span>
             <span class="seg-meta">
               <span class="seg-label">${escapeHtml(object.label)}</span>
-              <span class="seg-count">${object.splatIndices.length.toLocaleString()} splats · ${object.sourceViews} view${object.sourceViews > 1 ? "s" : ""}</span>
+              <span class="seg-count">${Math.round(object.score * 100)}% mask confidence | ${object.splatIndices.length.toLocaleString()} splats · ${object.sourceViews} view${object.sourceViews > 1 ? "s" : ""}</span>
             </span>
             <span class="seg-actions">
               <button type="button" data-action="focus" data-id="${object.id}" title="Frame this object">⤢</button>

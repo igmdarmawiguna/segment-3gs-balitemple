@@ -1,21 +1,24 @@
 import type { DecodedMask, MaskResult } from "./types";
 
 export async function decodeMask(mask: MaskResult, width: number, height: number): Promise<DecodedMask> {
-  const image = await loadImage(`data:image/png;base64,${mask.mask_png}`);
-  const w = image.naturalWidth || width;
-  const h = image.naturalHeight || height;
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  if (!ctx) throw new Error("Failed to create 2D context for mask decode");
-  ctx.drawImage(image, 0, 0);
-  const rgba = ctx.getImageData(0, 0, w, h).data;
-  const data = new Uint8Array(w * h);
-  for (let i = 0; i < data.length; i += 1) {
-    data[i] = rgba[i * 4] > 127 ? 255 : 0;
+  // Decode bitmap masks without sequential DOM image-load events during a sweep.
+  const image = await decodePng(mask.mask_png);
+  try {
+    const w = image.width || width;
+    const h = image.height || height;
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) throw new Error("Failed to create 2D context for mask decode");
+    ctx.drawImage(image, 0, 0);
+    const rgba = ctx.getImageData(0, 0, w, h).data;
+    const data = new Uint8Array(w * h);
+    for (let i = 0; i < data.length; i++) data[i] = rgba[i * 4]! > 127 ? 255 : 0;
+    return { label: mask.label, score: mask.score, width: w, height: h, data, bbox: mask.bbox };
+  } finally {
+    if ("close" in image) image.close();
   }
-  return { label: mask.label, score: mask.score, width: w, height: h, data, bbox: mask.bbox };
 }
 
 export function sampleMask(mask: DecodedMask, px: number, py: number): boolean {
@@ -52,4 +55,12 @@ function loadImage(src: string): Promise<HTMLImageElement> {
     image.onerror = () => reject(new Error("Failed to decode mask PNG"));
     image.src = src;
   });
+}
+
+async function decodePng(base64: string): Promise<ImageBitmap | HTMLImageElement> {
+  if (typeof createImageBitmap === "function") {
+    const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+    return createImageBitmap(new Blob([bytes], { type: "image/png" }));
+  }
+  return loadImage(`data:image/png;base64,${base64}`);
 }

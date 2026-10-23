@@ -488,3 +488,15 @@ kbd {
     width: auto;
   }
 }
+
+/* Refinement controls follow the panel theme. */
+#seg-depth, #seg-edge {
+  display: block;
+  width: 100%;
+  margin: 6px 0 12px;
+  padding: 8px;
+  border: 1px solid #394457;
+  border-radius: 8px;
+  background: #111827;
+  color: #eef7ff;
+}
